@@ -1,15 +1,17 @@
-
 import re
 
 class ParseError(Exception):
+    
+    FMT = "ParseError <Line %d Column %d> %s"
+    
     def __init__(self, mesg, pos):
         self.mesg = mesg
         self.line = pos[0]
         self.col = pos[1]
     
     def __str__(self):
-        return "ParseError <Line %d Column %d> %s" % (
-                            self.line, self.col, self.mesg)
+        return self.FMT % (self.line, self.col, self.mesg)
+
 
 class CONST(object):
     def __init__(self, name):
@@ -19,6 +21,7 @@ class CONST(object):
     def __repr__(self):
         return self.__str__()
 
+
 MULTI = CONST("Multi")
 STATIC = CONST("Static")
 TAG = CONST("Tag")
@@ -27,6 +30,7 @@ INV_SECTION = CONST("Inverted Section")
 PARTIAL = CONST("Partial")
 UTAG = CONST("Unescaped Tag")
 ETAG = CONST("Escaped Tag")
+
 
 class Scanner(object):
     def __init__(self, data):
@@ -71,10 +75,12 @@ class Scanner(object):
             self.compiled[pattern] = ret
         return ret
 
+
 class Parser(object):
-    def __init__(self, source, opts):
+    def __init__(self, source, opts=None):
         self.source = source
         self.scanner = Scanner(self.source)
+        opts = opts or {}
         self.otag = re.escape(opts.get("otag", "{{"))
         self.ctag = re.escape(opts.get("ctag", "}}"))
         self.tag_content = opts.get("tag_content", r"[\w?!\/-]*")
@@ -92,6 +98,8 @@ class Parser(object):
 
         if len(self.sections):
             raise ParseError("Unclosed section.", self._pos())
+            
+        return self.result
         
     def parse_tag(self):
         match = self.scanner.match(self.otag)
@@ -176,7 +184,3 @@ class Parser(object):
         if not lines:
             lines = [""]
         return (len(lines), len(lines[-1]))
-
-
-def parse_template(source, options):
-    return Parser(source, options or {}).parse()
