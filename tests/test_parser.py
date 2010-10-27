@@ -61,6 +61,20 @@ def test_comments_ignored():
         yield run_comment_test, case
     t.raises(p.ParseError, p.Parser("{{!}}").parse)
 
+def test_tag_content():
+    tests = [
+        ("{{abcdefghijklmnopqrstuvwxyz}}", "abcdefghijklmnopqrstuvwxyz"),
+        ("{{ABCDEFGHIJKLMNOPQRSTUVWXYZ}}", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        ("{{01234567890}}", "01234567890"),
+        ("{{?!/-_}}", "?!/-_"),
+    ]
+    def run_tag_content_test(data):
+        r = p.Parser(data[0])
+        r.parse()
+        t.eq(r.result, [p.MULTI, [p.TAG, p.ETAG, data[1]]])
+    for case in tests:
+        yield run_tag_content_test, case
+
 def test_alternate_tags():
     tests = [
         ("{{=<{ }>}}", [p.MULTI]),
@@ -81,22 +95,40 @@ def test_alternate_tags():
 def _sect_tests(tagtype, const):
     tests = [
         ("{{%sfoo}}{{/foo}}" % tagtype,
-            [p.MULTI, [p.TAG, const, "foo", [p.MULTI]]]
+            [p.MULTI, [p.TAG, const, "foo", "", [p.MULTI]]]
         ),
         ("{{%sfoo}}{{bar}}{{/foo}}" % tagtype,
-            [p.MULTI, [p.TAG, const, "foo", [
-                p.MULTI, [p.TAG, p.ETAG, "bar"]
+            [p.MULTI, [p.TAG, const, "foo", "{{bar}}", [
+                p.MULTI, [p.TAG, p.ETAG, "bar"],
+            ]]]
+        ),
+        ("{{%sfoo}} {{bar}}{{/foo}}" % tagtype,
+            [p.MULTI, [p.TAG, const, "foo", " {{bar}}", [
+                p.MULTI, [p.STATIC, " "], [p.TAG, p.ETAG, "bar"]
+            ]]]
+        ),
+        ("{{%sfoo}}{{bar}} {{/foo}}" % tagtype,
+            [p.MULTI, [p.TAG, const, "foo", "{{bar}} ", [
+                p.MULTI, [p.TAG, p.ETAG, "bar"], [p.STATIC, " "]
+            ]]]
+        ),
+        ("{{%sfoo}} {{bar}} {{/foo}}" % tagtype,
+            [p.MULTI, [p.TAG, const, "foo", " {{bar}} ", [
+                p.MULTI,
+                [p.STATIC, " "],
+                [p.TAG, p.ETAG, "bar"],
+                [p.STATIC, " "]
             ]]]
         ),
         ("{{%sfoo}}{{%sbar}}{{/bar}}{{/foo}}" % (tagtype, tagtype),
-            [p.MULTI, [p.TAG, const, "foo", [
-                p.MULTI, [p.TAG, const, "bar", [p.MULTI]]
+            [p.MULTI, [p.TAG, const, "foo", "{{%sbar}}{{/bar}}" % tagtype, [
+                p.MULTI, [p.TAG, const, "bar", "", [p.MULTI]]
             ]]]
         ),
         ("{{%sfoo}}{{/foo}}{{%sbar}}{{/bar}}" % (tagtype, tagtype),
             [p.MULTI,
-                [p.TAG, const, "foo", [p.MULTI]],
-                [p.TAG, const, "bar", [p.MULTI]]
+                [p.TAG, const, "foo", "", [p.MULTI]],
+                [p.TAG, const, "bar", "", [p.MULTI]]
             ]
         )
     ]
@@ -157,7 +189,6 @@ def test_partials():
         t.raises(p.ParseError, p.Parser(case).parse)
     for case in tests:
         yield run_partials_error_test, case
-
 
 def test_error():
     try:

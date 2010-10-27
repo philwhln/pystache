@@ -1,5 +1,5 @@
-from pystache.view import View
+from pystache.template import Template
+from pystache.lookup import TemplateLookup
 
 def render(source, context=None):
-    v = View(source=source, context=context)
-    return v.render()
+    return Template(source).render(context)

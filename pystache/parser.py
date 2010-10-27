@@ -37,28 +37,29 @@ class Scanner(object):
         self.data = data
         self.pos = 0
         self.compiled = {}
+        self.re_match = None
     
     def eos(self):
         return self.pos >= len(self.data)
     
     def match(self, pattern):
-        match = self.pattern(pattern).match(self.data, self.pos)
-        if not match:
+        self.re_match = self.pattern(pattern).match(self.data, self.pos)
+        if not self.re_match:
             return
-        self.pos = match.end()
-        return match.group(0)
+        self.pos = self.re_match.end()
+        return self.re_match.group(0)
     
     def skip(self, pattern):
-        match = self.pattern(pattern).search(self.data, self.pos)
-        if not match:
+        self.re_match = self.pattern(pattern).match(self.data, self.pos)
+        if not self.re_match:
             return
-        self.pos = match.end()
+        self.pos = self.re_match.end()
         
     def until(self, pattern):
-        match = self.pattern(pattern).search(self.data, self.pos)
-        if not match:
+        self.re_match = self.pattern(pattern).search(self.data, self.pos)
+        if not self.re_match:
             return None
-        mstart = match.start()
+        mstart = self.re_match.start()
         ret = self.data[self.pos:mstart]
         self.pos = mstart
         return ret
@@ -85,8 +86,7 @@ class Parser(object):
         self.ctag = re.escape(opts.get("ctag", "}}"))
         self.tag_content = opts.get("tag_content", r"[\w?!\/-]*")
         self.any_content = opts.get("any_content", ["!", "="])
-        self.skip_whitespace = opts.get("skip_whitespace", ['#', '^', '/'])
-        self.patterns = {}
+        self.skip_newline = opts.get("skip_newline", ['#', '^', '/'])
 
     def parse(self):
         self.sections = []
@@ -105,6 +105,7 @@ class Parser(object):
         match = self.scanner.match(self.otag)
         if not match:
             return
+        otag_match = self.scanner.re_match
         
         # Tags can be switched as we parse the template. So we
         # store the current tag in case its about to be changed.
@@ -119,27 +120,33 @@ class Parser(object):
         if content and tagtype not in self.any_content:
             m = self.scanner.pattern("^%s$" % self.tag_content).match(content)
             if not m:
-                raise ParseError("Invalid tag content.", self._pos())
+                pos = self._pos()
+                raise ParseError("Invalid tag content: %s" % content, pos)
         if content is None or not len(content):
             raise ParseError("Empty tag.", self._pos())
         
         if tagtype == "#":
             block = [MULTI]
-            self.result.append([TAG, SECTION, content, block])
-            self.sections.append([content, self._pos(), self.result])
+            self.result.append([TAG, SECTION, content, None, block])
+            self.sections.append([content, None, self.result])
             self.result = block
         elif tagtype == "^":
             block = [MULTI]
-            self.result.append([TAG, INV_SECTION, content, block])
-            self.sections.append([content, self._pos(), self.result])
+            self.result.append([TAG, INV_SECTION, content, None, block])
+            self.sections.append([content, None, self.result])
             self.result = block
         elif tagtype == "/":
             if not len(self.sections):
                 raise ParseError("Closing unopened: %s" % content, self._pos())                
-            section, pos, result = self.sections.pop(-1)
-            self.result = result    
+            section, ctag_match, result = self.sections.pop(-1)
+            self.result = result
+            # Close tag must match the open tag.
             if section != content:
                 raise ParseError("Unclosed section: %s" % section, self._pos())
+            # Store contents for passing to a lambda
+            start = ctag_match.end() # End of open tag
+            end = otag_match.start() # Start of close tag
+            self.result[-1][3] = self.source[start:end]
         elif tagtype == "!":
             pass # Ignore comments
         elif tagtype == "=":
@@ -147,7 +154,7 @@ class Parser(object):
             m = self.scanner.pattern(self.tag_content).match(ctag)
             if len(m.group(0)):
                 raise ParseError("Invalid close tag: %s" % ctag, self._pos())
-            self.otag, self.ctag = otag, ctag
+            self.otag, self.ctag = re.escape(otag), re.escape(ctag)
         elif tagtype == ">" or tagtype == "<":
             self.result.append([TAG, PARTIAL, content])
         elif tagtype == "{" or tagtype == "&":
@@ -165,8 +172,12 @@ class Parser(object):
         if not self.scanner.match(curr_ctag):
             raise ParseError("Unclosed tag.", self._pos())
         
-        if tagtype in self.skip_whitespace:
-            self.scanner.skip("\s+")
+        # Mark end of tag for section content
+        if tagtype == "#" or tagtype == "^":
+            self.sections[-1][1] = self.scanner.re_match
+
+        if tagtype in self.skip_newline:
+            self.scanner.skip("\n")
         
     def parse_text(self):
         text = self.scanner.until(self.otag)

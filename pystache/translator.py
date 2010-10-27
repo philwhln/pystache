@@ -91,11 +91,6 @@ class Translator(object):
         self.w.func_("render(ctx)")
         self.w.stmt_("buf = []")
         self.translate_ast(self.ast)
-        self.w.for_("pos, val in enumerate(buf)")
-        self.w.if_("not isinstance(val, basestring)")
-        self.w.stmt_("buf[pos] = str(val)")
-        self.w.fi_()
-        self.w.rof_()
         self.w.return_("''.join(buf)")
         return self.w.getvalue()
 
@@ -106,9 +101,9 @@ class Translator(object):
             self.translate_multi(ast[1:])
         elif ast[0] == TAG:
             if ast[1] == SECTION:
-                self.translate_section(ast[2], ast[3:])
+                self.translate_section(ast[2], ast[3], ast[4:])
             elif ast[1] == INV_SECTION:
-                self.translate_inv_section(ast[2], ast[3:])
+                self.translate_inv_section(ast[2], ast[4:])
             elif ast[1] == PARTIAL:
                 self.translate_partial(ast[2])
             elif ast[1] == UTAG:
@@ -124,18 +119,16 @@ class Translator(object):
         for node in nodes:
             self.translate_ast(node)
 
-    def translate_section(self, name, nodes):
+    def translate_section(self, name, content, nodes):
         self.w.stmt_("v = ctx.get(%r)" % name)
+        self.w.if_("v")
         self.w.if_("v == True")
         for node in nodes:
             self.translate_ast(node)
         self.w.elif_("callable(v)")
-
-        # XXX: NEEDS A FIX IN THE PARSER
-        self.w.stmt_("pass")
-
+        self.w.stmt_("buf.append(v(%r))" % content)
         self.w.else_()
-        self.w.if_("isinstance(v, basestring)")
+        self.w.if_('isinstance(v, basestring) or hasattr(v, "items")')
         self.w.stmt_("v = [v]")
         self.w.else_()
         self.w.try_()
@@ -151,6 +144,7 @@ class Translator(object):
             self.w.stmt_("ctx.pop()")
         self.w.rof_()
         self.w.fi_()
+        self.w.fi_()
 
     def translate_inv_section(self, name, nodes):
         self.w.stmt_("v = ctx.get(%r)" % name)
@@ -163,10 +157,10 @@ class Translator(object):
         self.w.stmt_("buf.append(ctx.partial(%r))" % name)
 
     def translate_etag(self, name):
-        self.w.stmt_("buf.append(cgi.escape(ctx.get(%r)))" % name)
+        self.w.stmt_("buf.append(cgi.escape(ctx.getstr(%r), True))" % name)
 
     def translate_utag(self, name):
-        self.w.stmt_("buf.append(ctx.get(%r))" % name)
+        self.w.stmt_("buf.append(ctx.getstr(%r))" % name)
 
     def translate_static(self, data):
         self.w.stmt_("buf.append(%r)" % data)
