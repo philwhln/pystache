@@ -95,7 +95,7 @@ def test_alternate_tags():
 def _sect_tests(tagtype, const):
     tests = [
         ("{{%sfoo}}{{/foo}}" % tagtype,
-            [p.MULTI, [p.TAG, const, "foo", "", [p.MULTI]]]
+            [p.MULTI, [p.TAG, const, "foo", "", [p.MULTI, [p.STATIC, ""]]]]
         ),
         ("{{%sfoo}}{{bar}}{{/foo}}" % tagtype,
             [p.MULTI, [p.TAG, const, "foo", "{{bar}}", [
@@ -122,13 +122,13 @@ def _sect_tests(tagtype, const):
         ),
         ("{{%sfoo}}{{%sbar}}{{/bar}}{{/foo}}" % (tagtype, tagtype),
             [p.MULTI, [p.TAG, const, "foo", "{{%sbar}}{{/bar}}" % tagtype, [
-                p.MULTI, [p.TAG, const, "bar", "", [p.MULTI]]
+                p.MULTI, [p.TAG, const, "bar", "", [p.MULTI, [p.STATIC, ""]]]
             ]]]
         ),
         ("{{%sfoo}}{{/foo}}{{%sbar}}{{/bar}}" % (tagtype, tagtype),
             [p.MULTI,
-                [p.TAG, const, "foo", "", [p.MULTI]],
-                [p.TAG, const, "bar", "", [p.MULTI]]
+                [p.TAG, const, "foo", "", [p.MULTI, [p.STATIC, ""]]],
+                [p.TAG, const, "bar", "", [p.MULTI, [p.STATIC, ""]]]
             ]
         )
     ]

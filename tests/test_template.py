@@ -27,6 +27,9 @@ def test_class_method():
 def test_view_section():
     t.eq(render("{{#foo}}bar{{/foo}}", {"foo": [1]}), "bar")
 
+def test_empty_section():
+    t.eq(render("{{#foo}}{{/foo}}", {"foo": []}), "")
+
 def test_view_section_subctx():
     ctx = {"foo": [{"item": "ohai"}, {"item": "there"}]}
     t.eq(render("{{#foo}}{{item}}{{/foo}}", ctx), "ohaithere")

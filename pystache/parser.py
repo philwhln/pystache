@@ -137,7 +137,11 @@ class Parser(object):
             self.result = block
         elif tagtype == "/":
             if not len(self.sections):
-                raise ParseError("Closing unopened: %s" % content, self._pos())                
+                raise ParseError("Closing unopened: %s" % content, self._pos())
+            # If the section was empty, include an empty static
+            # section so that translating doesn't break.
+            if self.result == [MULTI]:
+                self.result.append([STATIC, ""])
             section, ctag_match, result = self.sections.pop(-1)
             self.result = result
             # Close tag must match the open tag.
