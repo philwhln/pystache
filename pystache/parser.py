@@ -97,8 +97,7 @@ class Parser(object):
                 self.parse_text()
 
         if len(self.sections):
-            sname = self.sections[-1][0]
-            raise ParseError("Unclosed section: %s" % sname, self._pos())
+            raise ParseError("Unclosed section.", self._pos())
             
         return self.result
         
