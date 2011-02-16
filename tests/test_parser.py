@@ -66,7 +66,9 @@ def test_tag_content():
         ("{{abcdefghijklmnopqrstuvwxyz}}", "abcdefghijklmnopqrstuvwxyz"),
         ("{{ABCDEFGHIJKLMNOPQRSTUVWXYZ}}", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         ("{{01234567890}}", "01234567890"),
-        ("{{?!/-_}}", "?!/-_"),
+        ("{{?!/-._}}", "?!/-._"),
+        ("{{foo^^^}}", "foo^^^"),
+        ("{{foo^^^.bar.baz}}", "foo^^^.bar.baz")
     ]
     def run_tag_content_test(data):
         r = p.Parser(data[0])
@@ -74,6 +76,18 @@ def test_tag_content():
         t.eq(r.result, [p.MULTI, [p.TAG, p.ETAG, data[1]]])
     for case in tests:
         yield run_tag_content_test, case
+
+def test_bad_tag_content():
+    tests = [
+        "{{@}}",
+        "{{foo.bar.}}",
+        "{{foo.bar^^}}",
+        "{{^^foo}}"
+    ]
+    def run_bad_tag_content_test(data):
+        t.raises(p.ParseError, p.Parser(data).parse)
+    for case in tests:
+        yield run_bad_tag_content_test, case
 
 def test_alternate_tags():
     tests = [
