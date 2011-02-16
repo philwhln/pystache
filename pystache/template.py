@@ -116,9 +116,21 @@ class Context(object):
             return str(ret)
         return ret
     
-    def getctx(self, name):
+    def getctx(self, name, count=None):
         ret = NOT_FOUND
-        for c in self.stack[::-1]:
+        
+        # Check for accessing up the stack using
+        # the name^^ syntax. Each ^ means we want
+        # to remove a stack element.
+        stack = self.stack[:]
+        while name[-1:] == "^" and len(stack) > 1:
+            stack.pop(-1)
+            name = name[:-1]
+        # Remove any trailing markers.
+        name = name.rstrip("^")
+
+
+        for c in stack[::-1]:
             try:
                 ret = c[name]
                 break

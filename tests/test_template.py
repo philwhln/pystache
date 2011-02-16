@@ -47,6 +47,26 @@ def test_dotted():
     t.eq(render("{{foo3.bar.bar}}", ctx), "")
     t.eq(render("{{foo4.bar.zing}}", ctx), "")
 
+def test_backup():
+    ctx = {
+        "foo": {"bar": {"bing": "1"}},
+        "bar": {"baz": {"bing": "2", "foo": "3"}},
+        "baz": "4"
+    }
+    t.eq(render("{{#foo}}{{baz^}}{{/foo}}", ctx), "4")
+    t.eq(render("{{#foo}}{{#bar}}{{baz^^}}{{/bar}}{{/foo}}", ctx), "4")
+    t.eq(render("{{#bar}}{{#baz}}{{foo^^.bar.bing}}{{/baz}}{{/bar}}", ctx), "1")
+    t.eq(
+        render(
+            "{{#bar}}{{#baz}}{{#bing}}{{foo^}}{{/bing}}{{/baz}}{{/bar}}",
+            ctx
+        ),
+        "3"
+    )
+    t.eq(render("{{#foo}}{{#bar}}{{baz^^^}}{{/bar}}{{/foo}}", ctx), "4")
+    t.eq(render("{{#foo}}{{#bar}}{{baz^^^^}}{{/bar}}{{/foo}}", ctx), "4")
+    t.eq(render("{{#foo}}{{#bar}}{{baz^^^^^^^^}}{{/bar}}{{/foo}}", ctx), "4")
+
 def test_view_section():
     t.eq(render("{{#foo}}bar{{/foo}}", {"foo": [1]}), "bar")
 
