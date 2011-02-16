@@ -159,6 +159,133 @@ def test_section():
     for t in _sect_tests("^", p.INV_SECTION):
         yield t
 
+def test_else():
+    tests = [
+        ("{{#foo}}{{^}}{{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", "", [p.MULTI, [p.STATIC, ""]]],
+                [p.TAG, p.INV_SECTION, "foo", "", [p.MULTI, [p.STATIC, ""]]]
+            ]
+        ),
+        ("{{#foo}}{{bar}}{{^}}{{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", "{{bar}}", [
+                    p.MULTI, [p.TAG, p.ETAG, "bar"],
+                ]],
+                [p.TAG, p.INV_SECTION, "foo", "", [p.MULTI, [p.STATIC, ""]]]
+            ]
+        ),
+        ("{{#foo}}{{^}}{{bar}}{{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", "", [p.MULTI, [p.STATIC, ""]]],
+                [p.TAG, p.INV_SECTION, "foo", "{{bar}}", [
+                    p.MULTI, [p.TAG, p.ETAG, "bar"]                    
+                ]]
+            ]
+        ),
+        ("{{#foo}}{{bar}} {{^}}{{bing}} {{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", "{{bar}} ", [
+                    p.MULTI,
+                    [p.TAG, p.ETAG, "bar"],
+                    [p.STATIC, " "]
+                ]],
+                [p.TAG, p.INV_SECTION, "foo", "{{bing}} ", [
+                    p.MULTI,
+                    [p.TAG, p.ETAG, "bing"],
+                    [p.STATIC, " "]
+                ]]
+            ]
+        ),
+        ("{{#foo}} {{bar}}{{^}} {{bing}}{{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", " {{bar}}", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bar"]
+                ]],
+                [p.TAG, p.INV_SECTION, "foo", " {{bing}}", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bing"]
+                ]]
+            ]
+        ),
+        ("{{#foo}} {{bar}} {{^}} {{bing}} {{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", " {{bar}} ", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bar"],
+                    [p.STATIC, " "]
+                ]],
+                [p.TAG, p.INV_SECTION, "foo", " {{bing}} ", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bing"],
+                    [p.STATIC, " "]
+                ]]
+            ]
+        ),
+        ("{{#foo}} {{#bar}}before{{^}}after{{/bar}}{{^}} {{bing}} {{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", " {{#bar}}before{{^}}after{{/bar}}",[
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.SECTION, "bar", "before", [
+                        p.MULTI, [p.STATIC, "before"]
+                    ]],
+                    [p.TAG, p.INV_SECTION, "bar", "after", [
+                        p.MULTI, [p.STATIC, "after"]
+                    ]]
+                ]],
+                [p.TAG, p.INV_SECTION, "foo", " {{bing}} ", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bing"],
+                    [p.STATIC, " "]
+                ]]
+            ]
+        ),
+        ("{{#foo}} {{bing}} {{^}} {{#bar}}before{{^}}after{{/bar}}{{/foo}}",
+            [p.MULTI,
+                [p.TAG, p.SECTION, "foo", " {{bing}} ", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.ETAG, "bing"],
+                    [p.STATIC, " "]
+                ]],
+                [p.TAG, p.INV_SECTION, "foo",
+                        " {{#bar}}before{{^}}after{{/bar}}", [
+                    p.MULTI,
+                    [p.STATIC, " "],
+                    [p.TAG, p.SECTION, "bar", "before", [
+                        p.MULTI, [p.STATIC, "before"]
+                    ]],
+                    [p.TAG, p.INV_SECTION, "bar", "after", [
+                        p.MULTI, [p.STATIC, "after"]
+                    ]]
+                ]]
+            ]
+        ),
+    ]
+    def run_section_test(data):
+        r = p.Parser(data[0])
+        r.parse()
+        t.eq(r.result, data[1])
+    for case in tests:
+        yield run_section_test, case
+    
+    tests = [
+        "{{#foo}}{{^}}",
+        "{{^foo}}{{^}}{{/foo}}",
+        "{{^}}{{/foo}}"
+    ]
+    def run_section_error_test(data):
+        t.raises(p.ParseError, p.Parser(data).parse)
+    for case in tests:
+        yield run_section_error_test, case
+
 def test_partials():
     tests = [
         "{{<name}}",

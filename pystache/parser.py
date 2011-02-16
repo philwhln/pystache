@@ -122,7 +122,7 @@ class Parser(object):
             if not m:
                 pos = self._pos()
                 raise ParseError("Invalid tag content: %s" % content, pos)
-        if content is None or not len(content):
+        if content is None or not len(content) and tagtype != "^":
             raise ParseError("Empty tag.", self._pos())
         
         if tagtype == "#":
@@ -130,11 +130,36 @@ class Parser(object):
             self.result.append([TAG, SECTION, content, None, block])
             self.sections.append([content, None, self.result])
             self.result = block
-        elif tagtype == "^":
+        elif tagtype == "^" and content:
+            # This is an inverted section (not an else)
             block = [MULTI]
             self.result.append([TAG, INV_SECTION, content, None, block])
             self.sections.append([content, None, self.result])
             self.result = block
+        elif tagtype == "^":
+            # An else block. Basic implementation is to close previous
+            # section and open an inverted section.
+            # Close:
+            if not len(self.sections):
+                raise ParseError("Hanging else section.", self._pos())
+            # Append an empty static section for translation
+            if self.result == [MULTI]:
+                self.result.append([STATIC, ""])
+            section, ctag_match, result = self.sections.pop(-1)
+            self.result = result
+            # Check we're else'ing a normal section
+            if self.result[-1][1] != SECTION:
+                mesg = "Invalid section for else: %s" % self.result[1]
+                raise ParseError(mesg, self._pos())
+            # Store content for lambdas.
+            start = ctag_match.end()
+            end = otag_match.start()
+            self.result[-1][3] = self.source[start:end]
+            # Open:
+            block = [MULTI]
+            self.result.append([TAG, INV_SECTION, section, None, block])
+            self.sections.append([section, None, self.result])
+            self.result = block            
         elif tagtype == "/":
             if not len(self.sections):
                 raise ParseError("Closing unopened: %s" % content, self._pos())
