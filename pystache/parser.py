@@ -84,7 +84,7 @@ class Parser(object):
         opts = opts or {}
         self.otag = re.escape(opts.get("otag", "{{"))
         self.ctag = re.escape(opts.get("ctag", "}}"))
-        self.tag_content = opts.get("tag_content", r"[\w?!\/-]*")
+        self.tag_content = opts.get("tag_content", r"[\w?!\/\-\.]*")
         self.any_content = opts.get("any_content", ["!", "="])
         self.skip_newline = opts.get("skip_newline", ['#', '^', '/'])
 

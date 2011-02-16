@@ -81,6 +81,42 @@ class Context(object):
             return callable(func)
 
     def get(self, name):
+        parts = name.split(".")
+        ret = self.getctx(parts.pop(0))
+        while ret is not NOT_FOUND and len(parts):
+            curr = parts.pop(0)
+            next = NOT_FOUND
+            try:
+                next = ret[curr]
+            except (TypeError, KeyError, IndexError):
+                pass
+            
+            if next is NOT_FOUND:
+                next = getattr(ret, curr, NOT_FOUND)
+            
+            if next is NOT_FOUND:
+                ret = next
+                break
+            
+            if self.should_call(next):
+                next = next()
+        
+            ret = next
+        
+        if ret is NOT_FOUND and self.should_raise():
+            raise ContextMiss(name)
+        elif ret is NOT_FOUND:
+            return ""
+        else:
+            return ret
+
+    def getstr(self, name):
+        ret = self.get(name)
+        if not isinstance(ret, basestring):
+            return str(ret)
+        return ret
+    
+    def getctx(self, name):
         ret = NOT_FOUND
         for c in self.stack[::-1]:
             try:
@@ -99,17 +135,6 @@ class Context(object):
                 ret = ret()
             break
 
-        if ret is NOT_FOUND and self.should_raise():
-            raise ContextMiss(name)
-        elif ret is NOT_FOUND:
-            return ""
-        else:
-            return ret
-
-    def getstr(self, name):
-        ret = self.get(name)
-        if not isinstance(ret, basestring):
-            return str(ret)
         return ret
 
 
