@@ -88,7 +88,7 @@ class Parser(object):
         self.any_content = opts.get("any_content", ["!", "="])
         self.skip_newline = opts.get("skip_newline", ['#', '^', '/'])
 
-        pat = r"[\w?!\/\-]*?([\w?!\/\-]\^*)?(\.[\w?!\/\-\.]*?[\w?!\/\-]+)?"
+        pat = r"[\w?!\/\-]*?([\w?!\/\-]\^*)?(\.[\w?!\/\-]+)*"
         self.tag_content = opts.get("tag_content", pat)
 
 
