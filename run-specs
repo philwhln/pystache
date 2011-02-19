@@ -1,0 +1,161 @@
+#! /usr/bin/env python
+
+import contextlib as ctx
+import fnmatch
+import json
+import optparse as op
+import os
+import traceback
+import urllib
+import yaml
+
+
+import pystache
+
+
+__usage__ = '%prog [OPTIONS]'
+
+
+def make_lambda(loader, node):
+    value = loader.construct_mapping(node)
+    code = value.get("python")
+    if code is None:
+        raise RuntimeError("No python lambda for test.")
+    return eval(code)
+yaml.add_constructor(u'!code', make_lambda)
+
+
+class NotCachedError(Exception):
+    pass
+
+
+class GitHubTree(object):
+    
+    API = "http://github.com/api/v2/json"
+
+    def __init__(self, user, repo, branch):
+        self.user = user
+        self.repo = repo
+        self.branch = branch
+        c = self.get_json("commits", "show", self.user, self.repo, self.branch)
+        self.sha = c["commit"]["tree"]
+
+    def get_files(self, path, pattern=None):
+        try:
+            for fname, body in self.get_cached():
+                yield fname, body
+            return
+        except NotCachedError:
+            pass
+        path = filter(None, path.lstrip("/").split("/"))
+        dstpath = []
+        sha = self.sha
+        while len(path):
+            dstpath.append(path[0])
+            sha = self.get_subtree_sha(path.pop(0), sha=sha)
+        t = self.get_json("tree", "show", self.user, self.repo, sha)
+        for meta in t["tree"]:
+            if not pattern:
+                yield self.get_file(meta["sha"], dstpath, meta["name"])
+            if fnmatch.fnmatch(meta["name"], pattern):
+                yield self.get_file(meta["sha"], dstpath, meta["name"])
+
+    def get_cached(self):
+        if os.path.isdir(self.spec_dir()):
+            for path, dnames, fnames in os.walk(self.spec_dir()):
+                for fname in fnames:
+                    with open(os.path.join(path, fname)) as handle:
+                        yield fname, handle.read()
+        else:
+            raise NotCachedError()
+
+    def get_file(self, sha, dstpath, fname):
+        data = self.get_url("blob", "show", self.user, self.repo, sha)
+        parts = [self.spec_dir()] + dstpath + [fname]
+        if not os.path.exists(os.path.dirname(os.path.join(*parts))):
+            os.makedirs(os.path.dirname(os.path.join(*parts)))
+        with open(os.path.join(*parts), "w") as dst:
+            dst.write(data)
+        return fname, data
+    
+    def get_subtree_sha(self, dirname, sha=None):
+        for meta in self.get_tree(sha=sha):
+            if meta["type"] != "tree":
+                continue
+            if meta["name"] == dirname:
+                return meta["sha"]
+        raise RuntimeError("No subtree found for: %s" % dirname)
+
+    def get_tree(self, sha=None):
+        sha = sha or self.sha
+        t = self.get_json("tree", "show", self.user, self.repo, sha)
+        return t["tree"]
+
+    def get_url(self, *args):
+        url = os.path.join(self.API, *args)
+        with ctx.closing(urllib.urlopen(url)) as handle:
+            return handle.read()
+
+    def get_json(self, *args):
+        return json.loads(self.get_url(*args))
+
+    def spec_dir(self):
+        dirname = os.path.dirname(__file__)
+        return os.path.join(dirname, ".spec-%s" % self.sha)
+
+class SpecRunner(object):
+    def __init__(self, fname, data):
+        self.fname = fname
+        self.tests = yaml.load(data)["tests"]
+    
+    def run(self):
+        print "# %s" % self.fname
+        print "1..%d" % len(self.tests)
+        for test in self.tests:
+            self.run_test(test)
+
+    def run_test(self, test):
+        try:
+            partials = test.get("partials")
+            t = pystache.Template(test["template"], partials=partials)
+            output = t.render(test["data"])
+            if output == test["expected"]:
+                print "ok - %s" % test["name"]
+                return
+            print "not ok - %s" % test["name"]
+            print "    Expected: %r" % test["expected"]
+            print "    Found:    %r" % output
+        except Exception, inst:
+            print "not ok - %s" % test["name"]
+            tb = traceback.format_exc()
+            for line in tb.splitlines():
+                print "  %s" % line.rstrip()
+        
+
+def options():
+    return [
+        op.make_option("-u", "--user", dest='user', default='mustache',
+            help='GitHub user from which to download specs.'),
+        op.make_option("-r", "--repo", dest='repo', default='spec',
+            help='GitHub repo from which to download specs.'),
+        op.make_option("-b", "--branch", dest='branch', default='master',
+            help='GitHub branch from whcih to download specs.'),
+    ]
+
+def main():
+    parser = op.OptionParser(usage=__usage__, option_list=options())
+    opts, args = parser.parse_args()
+    
+    if len(args):
+        parser.error("Unknown arguments: %s" % (', '.join(args)))
+
+    ght = GitHubTree(opts.user, opts.repo, opts.branch)
+    runners = []
+    for fname, body in ght.get_files("specs", "*.yml"):
+        runners.append(SpecRunner(fname, body))
+    for runner in runners:
+        runner.run()
+
+if __name__ == '__main__':
+    main()    
+
