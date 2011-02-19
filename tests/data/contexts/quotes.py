@@ -1,4 +1,0 @@
-ctx = {
-    'quotes': '"',
-    'control':'X'
-}

@@ -1,5 +1,0 @@
-Hello Elise
-glytch True
-binary False
-value None
-numeric nan
