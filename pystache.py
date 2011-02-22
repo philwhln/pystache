@@ -83,7 +83,12 @@ class ContextProxy(object):
             self.should_raise = should_raise
     
     def render(self, writer, escaped=True):
-        data = self.template.decode(self.ctx)
+        if self._should_call(args=0):
+            data = self.cached = self.template.decode(self.ctx())
+            tmpl = self.template.sub_template(data=data)
+            data = tmpl.render(self)
+        else:            
+            data = self.template.decode(self.ctx)
         if escaped:
             data = cgi.escape(data, quote=True)
         writer.write(data)
@@ -99,7 +104,7 @@ class ContextProxy(object):
         return not bool(self.ctx)
 
     def islambda(self):
-        return self._should_call(self.ctx, args=1)
+        return self._should_call(args=1)
 
     def iterate(self):
         items = []
@@ -114,8 +119,8 @@ class ContextProxy(object):
             yield ContextProxy(self.template, item, self, self.should_raise)
 
     def execute(self, content, ctx, writer):
-        resp = self.ctx(content)
-        writer.write(self.template.decode(resp))
+        tmpl = self.template.sub_template(data=self.ctx(content))
+        tmpl.render(ctx, writer=writer)
 
     def _lookup(self, name):
         # Check for accessing up the stack using
@@ -141,13 +146,12 @@ class ContextProxy(object):
                 proxy = proxy.parent
                 continue
             break
-        if self._should_call(ret):
-            ret = ret()
         if ret is NOT_FOUND and self.should_raise:
             raise ContextMiss(name)
         return ContextProxy(self.template, ret, self, self.should_raise)
 
-    def _should_call(self, func, args=0):
+    def _should_call(self, args=0):
+        func = self.ctx
         if isinstance(func, (types.BuiltinFunctionType, types.FunctionType)):
             return func.func_code.co_argcount == args
         elif isinstance(func, (types.BuiltinMethodType, types.MethodType)):
@@ -431,21 +435,32 @@ class Writer(object):
         return ret
 
 
+class TemplateOptions(object):
+    def __init__(self, opts):
+        self.extension = opts.get("extension", None)
+        self.lookup = opts.get("lookup", None)
+        self.charset = opts.get("charset", "utf-8")
+        self.encoding_errors = opts.get("encoding-errors", "replace")
+
+    def get(self, name, default):
+        return getattr(self, name, default)
+
 class Template(object):
-    def __init__(self, data=None, filename=None, extension=None,
-                                    lookup=None, partials=None, opts=None):
+    def __init__(self, data=None, filename=None, partials=None, opts=None):
         self.data = data
         self.filename = filename
-        self.extension = extension
-        self.lookup = lookup
         self.partials = partials or {}
-        self.opts = opts or {}
+
+        if isinstance(opts, TemplateOptions):
+            self.opts = opts
+        else:
+            self.opts = TemplateOptions(opts or {})
 
         if self.data is None and self.filename is None:
             raise RuntimeError(u"Templates require either data or a filename.")
 
-        if self.extension is None and self.filename is not None:
-            self.extension = os.path.splitext(self.filename)[-1]
+        if self.opts.extension is None and self.filename is not None:
+            self.opts.extension = os.path.splitext(self.filename)[-1]
 
         if self.data is None:
             with open(self.filename) as handle:
@@ -453,7 +468,15 @@ class Template(object):
         
         if isinstance(self.data, str):
             self.data = self.decode(self.data)
+
         self.root = self.parse(self.data)
+
+    def sub_template(self, data=None, filename=None, **kwargs):
+        kwargs.setdefault("data", data)
+        kwargs.setdefault("filename", filename)
+        kwargs.setdefault("partials", self.partials)
+        kwargs.setdefault("opts", self.opts)
+        return Template(**kwargs)
 
     def render(self, context, writer=None):
         if not isinstance(context, ContextProxy):
@@ -466,7 +489,10 @@ class Template(object):
             return writer.getvalue()
 
     def get_partial(self, name, indent=None):
-        if self.lookup:
+        if name in self.partials:
+            tmpl = self.redent(self.partials[name], indent=indent)
+            return Template(tmpl, partials=self.partials, opts=self.opts)
+        elif self.opts.lookup:
             # I have to fix the indentiation issue for partials because
             # the Ruby version dictates this as part of the spec.
             raise NotImplementedError()
@@ -483,9 +509,6 @@ class Template(object):
             # if not os.path.exists(fname):
             #     raise PartialNotFound(name)
             # return Template(filename=fname, lookup=self.lookup, opts=self.opts)
-        elif name in self.partials:
-            tmpl = self.redent(self.partials[name], indent=indent)
-            return Template(tmpl, partials=self.partials, opts=self.opts)
         raise UnableToLoadPartials()
 
     def parse(self, data):
@@ -568,18 +591,24 @@ class TemplateLookup(object):
                             filesystem_checks=False, template_opts=None):
 
         self.templates = {}
+
         if isinstance(directories, basestring):
             directories = [directories]
-        self.directories = [os.path.abspath(d) for d in directories]
+        self.directories = [self.process_dir(d) for d in directories]
+
         self.extension = extension or ".mustache"
         if not self.extension.startswith("."):
             self.extension = "." + self.extension
+
         self.filesystem_checks = filesystem_checks
         self.template_opts = template_opts or {}
+
         if "extension" not in self.template_opts:
             self.template_opts["extension"] = self.extension
+
         if "lookup" not in self.template_opts:
             self.template_opts["lookup"] = self
+
         self.lock = threading.Lock()
 
     def get_template(self, name):
@@ -601,15 +630,20 @@ class TemplateLookup(object):
             return ret
 
     def find_template(self, name):
-        while name[:1] == "/" or name[:2] == "..":
-            if name[:1] == "/":
-                name = name[1:]
-            elif name[:2] == "..":
-                name = name[2:]
         for d in self.directories:
+            path = self.process_dir(os.path.join(d, name))
+            if os.path.commonprefix([d, path]) != d:
+                # Only allow template names to reference a subpath
+                # of the list of directories.
+                continue
+            path = os.path.normpath(os.path.join(d, name))
             fname = os.path.join(d, name)
             for fn in [fname, fname + self.extension]:
                 if os.path.exists(fn):
                     return fn
         raise LookupError("Failed to find template: %s" % name)
+
+    def process_dir(d):
+        return os.path.normpath(os.path.abspath(d))
+
 
