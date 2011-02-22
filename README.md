@@ -3,16 +3,11 @@ Pystache
 
 A Python port of the [Mustache][mustache] templating language. The code is
 largely based on a refactored port of the semi-current Ruby implementation.
-
 Mustache was originally inspired by [ctemplate][ctemplate] and [et][et]. A
 short summary of Mustache is that its a framework-agnostic way to render
-logic-free views.
-
-As ctemplates says, "It emphasizes separating logic from presentation:
-it is impossible to embed application logic in this template language."
-
-Pystache is written on Python 2.6 but should theoretically work on Python 2.5.
-Please open a new [issue][issue] if you find an error.
+logic-free views. As ctemplates says, "It emphasizes separating logic from
+presentation: it is impossible to embed application logic in this template
+language."
 
 Documentation
 =============
