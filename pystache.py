@@ -1,3 +1,5 @@
+from __future__ import with_statement
+
 import cgi
 import os
 import re
@@ -647,3 +649,8 @@ class TemplateLookup(object):
         return os.path.normpath(os.path.abspath(d))
 
 
+def render(template, context, **kwargs):
+    t = Template(data=template, **kwargs)
+    return t.render(context)
+
+    
