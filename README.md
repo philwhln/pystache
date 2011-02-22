@@ -17,7 +17,9 @@ The different Mustache tags are documented at [mustache(5)][mustache_5].
 Install It
 ==========
 
-    pip install pystache
+
+Currently you need to download and install from source as this is not the
+version listed in PyPi.
 
 Use It
 ======
