@@ -1,8 +1,10 @@
 from __future__ import with_statement
 
 import cgi
+import hashlib
 import os
 import re
+import threading
 import types
 
 try:
@@ -22,11 +24,11 @@ NOT_FOUND = object()
 # Exceptions
 
 
-class PyStachError(Exception):
+class PystacheError(Exception):
     pass
 
 
-class ParseError(PyStachError):
+class ParseError(PystacheError):
     def __init__(self, mesg, pos):
         self.mesg = mesg
         self.line = pos[0]
@@ -37,7 +39,7 @@ class ParseError(PyStachError):
         return fmt % (self.line, self.col, self.mesg)
 
 
-class TemplateError(PyStachError):
+class TemplateError(PystacheError):
     def __init__(self, mesg):
         self.mesg = mesg
     
@@ -45,7 +47,7 @@ class TemplateError(PyStachError):
         return u"TemplateError: %s" % self.mesg
 
 
-class ContextMiss(PyStachError):
+class ContextMiss(PystacheError):
     def __init__(self, name):
         self.name = name
 
@@ -53,7 +55,7 @@ class ContextMiss(PyStachError):
         return u"ContextMiss: Can't find value for: %s" % self.name
 
 
-class PartialNotFound(PyStachError):
+class PartialNotFound(PystacheError):
     def __init__(self, name):
         self.name = name
 
@@ -61,12 +63,12 @@ class PartialNotFound(PyStachError):
         return u"PartialNotFound: %s" % self.name
 
 
-class UnableToLoadPartials(PyStachError):
+class UnableToLoadPartials(PystacheError):
     def __str__(self):
         return u"Partials require lookup or filename to be set."
 
 
-class LookupError(Exception):
+class LookupError(PystacheError):
     def __init__(self, mesg):
         self.mesg = mesg
 
@@ -74,7 +76,325 @@ class LookupError(Exception):
         return u"LookupError: %s" % self.mesg
 
 
+class Tag(object):
+    """\
+    An internal object emitted by the tokenizer and consumed by
+    the template parsing to create templates.
+    """
+    def __init__(self, tagtype, name, start, end):
+        self.tagtype = tagtype
+        self.name = name
+        self.start = start
+        self.end = end
+
+
+class Renderable(object):
+    """\
+    Root class of a shallow class hiearchy responsible for representing
+    a parsed template.
+    """
+    def __init__(self, template):
+        self.template = template
+
+    def render(self, ctx, writer):
+        raise NotImplementedError()
+
+
+class Static(Renderable):
+    """\
+    Static nodes are used to represent the text not involved with
+    dynamic aspects of the template. For instance the template:
+    
+        Items {{#dots}}.{{/dots}} done.
+        
+    Has three Static nodes: "Items ", ".", and " done."
+    """
+    def __init__(self, template, data):
+        super(Static, self).__init__(template)
+        self.data = data
+
+    def render(self, ctx, writer):
+        writer.write(self.data)
+
+
+class Partial(Renderable):
+    """\
+    Partials are sub-templates that are evaluated and rendered during
+    the render phase of a template (as opposed to parse phase).
+    """
+    def __init__(self, template, name):
+        super(Partial, self).__init__(template)
+        self.name = name
+
+    def render(self, ctx, writer):
+        tmpl = self.template.get_partial(self.name)
+        return tmpl.render(ctx, writer)
+
+
+class Value(Renderable):
+    """\
+    Value nodes are a representation of simple variable substitution
+    using tags like {{foo}} or {{{foo}}}.
+    """
+    def __init__(self, template, name, escaped=True):
+        super(Value, self).__init__(template)
+        self.name = name
+        self.escaped = escaped
+
+    def render(self, ctx, writer):
+        ctx = ctx.get(self.name)
+        ctx.render(writer, escaped=self.escaped)
+
+
+class Multi(Renderable):
+    """\
+    Multi nodes can contain multiple sub-nodes that may be rendered
+    conditionally. Currently only the internal root node and sections
+    have this property.
+    """
+    def __init__(self, template, parent):
+        super(Multi, self).__init__(template)
+        self.parent = parent
+        self.sects = []
+
+    def add(self, obj):
+        self.sects.append(obj)
+        return obj
+
+    def render(self, ctx, writer):
+        map(lambda s: s.render(ctx, writer), self.sects)
+
+
+class Section(Multi):
+    """\
+    A Section represents part of a template that may be conditionally
+    rendered, rendered multiple times, or passed to a callable to
+    be evaluated.
+    """
+    def __init__(self, template, parent, name, start):
+        super(Section, self).__init__(template, parent)
+        self.name = name
+        self.start = start
+        self.end = None
+
+    def render(self, ctx, writer):
+        ctx = ctx.get(self.name)
+        if ctx.falsy():
+            return
+        elif ctx.islambda():
+            content = self.template.sub_data(self.start, self.end)
+            ctx.execute(content, ctx, writer)
+        else:
+            for item in ctx.iterate():
+                super(Section, self).render(item, writer)
+
+
+class InvSection(Multi):
+    """\
+    An InvSection (inverted section) is part of a template that is
+    rendered when its tag evalutes as falsy.
+    """
+    def __init__(self, template, parent, name, start):
+        super(InvSection, self).__init__(template, parent)
+        self.name = name
+        self.start = start
+        self.end = None
+
+    def render(self, ctx, writer):
+        ctx = ctx.get(self.name)
+        if ctx.falsy():
+            super(InvSection, self).render(ctx, writer)
+
+
+class Writer(object):
+    """\
+    This is the default class used for rendering templates. Users
+    can specify a writer kwarg to the render methods that will
+    replace the use of this class.
+    
+    Replacements only need to support the write(data) method. When
+    a custom writer is used, nothing is returned from the render
+    methods.
+    """
+    def __init__(self):
+        self.buf = []
+
+    def write(self, data):
+        assert isinstance(data, unicode)
+        self.buf.append(data)
+
+    def getvalue(self):
+        ret = u"".join(self.buf)
+        assert isinstance(ret, unicode)
+        return ret
+
+
+class TemplateOptions(object):
+    """\
+    An class that represents the options provided to a template during
+    instantiation. Options here are sequestered to an instance to ease
+    the instantiation of sub-templates for situations like partials.
+    
+    `opts` is a dict or instance of TemplateOptions.
+    
+    Supported options are:
+    
+        extension   - The filename extension for templates.
+        lookup      - An instance of TemplateLookup or any instance that has
+                      a `get_template(name)` method.
+        charset     - The character set to use when decoding non-unicode
+                      data. Default is 'utf-8'. Can be anything that
+                      `str.decode` accepts.
+        errors      - The action to take for decoding errors. Default is
+                      `replace` but can be anything that `str.decode` accepts.
+    """
+    def __init__(self, opts):
+        self.extension = opts.get("extension", ".mustache")
+        self.lookup = opts.get("lookup", None)
+        self.charset = opts.get("charset", "utf-8")
+        self.encoding_errors = opts.get("encoding-errors", "replace")
+
+    def get(self, name, default):
+        return getattr(self, name, default)
+
+
+class TemplateInfo(object):
+    """\
+    An internal class that represents a template loaded from disk
+    for use by the TemplateLoader to keep track of loaded Templates.
+    """
+    def __init__(self, fname, check_fs, tmpl_opts):
+        self.fname = fname
+        self.check_fs = check_fs
+        self.tmpl_opts = tmpl_opts
+        self.lock = threading.Lock()
+        self.template = None
+        self.mtime = None
+        self.load_template()
+
+    def get_template(self):
+        with self.lock:
+            if not self.check_fs:
+                return self.template
+        return self.load_template()
+
+    def load_template(self):
+        with self.lock:
+            self.mtime = os.stat(self.fname).st_mtime
+            self.template = Template(filename=self.fname, opts=self.tmpl_opts)
+            return self.template
+
+
+class TemplateLookup(object):
+    """\
+    The API required for TemplateLookup instances. This is defined so
+    that people are aware that `get_template(name)` is used when loading
+    partials for templates retreived from a lookup instance. Its not
+    a requirement that lookups subclass TemplateLookup.
+    """
+    def get_template(self, name):
+        raise NotImplementedError()
+
+
+class TemplateFileLookup(TemplateLookup):
+    """\
+    This class is used to allow for the loading of templates from the
+    filesystem using a set of directories as search paths. When a Template
+    is instantiated with a lookup it will also be used to locate files for
+    partials.
+    
+    directories - The list of directories to search.
+    ext         - When attempting to locate a template, the provided name
+                  will be used. If that check fails a second atttempt will
+                  use the same name with this filename extension. This
+                  allows users to dispense repeating filename extensions
+                  when requesting templates (or in partials).
+    check_fs    - Whether to recheck the filesystem to see if a template
+                  has changed. This check is based on file modification
+                  time.
+    tmpl_opts   - Passed as the opts keyword arg to the Template constructor.
+    """
+    def __init__(self, directories, ext=None, check_fs=False, tmpl_opts=None):
+
+        if isinstance(directories, basestring):
+            directories = [directories]
+        self.directories = [self.process_dir(d) for d in directories]
+        
+        self.recheck_fs = recheck_fs
+
+        extension = extension or ".mustache"
+        if extension[:1] != ".":
+            extension = "." + extension
+        if tmpl_opts is None:
+            tmpl_opts = {}
+        tmpl_opts.setdefault("extension", extension)
+        tmpl_opts.setdefault("lookup", self)
+        self.tmpl_opts = TemplateOptions(tmpl_opts)
+        
+        self.templates = {}
+        self.lock = threading.Lock()
+
+    def get_template(self, name):
+        with self.lock:
+            tinfo = self.templates.get(name, None)
+        if tinfo is not None:
+            return tinfo.get_template()
+        return self.load_template(name).get_template()
+
+    def load_template(self, name):
+        with self.lock:
+            try:
+                return self.templates[name]
+            except KeyError:
+                pass
+            fname = self.find_template(name)
+            tinfo = TemplateInfo(fname, self.check_fs, self.tmpl_opts)
+            self.templates[name] = tinfo
+            return tinfo
+
+    def find_template(self, name):
+        for d in self.directories:
+            fname = self.process_dir(os.path.join(d, name))
+            if os.path.commonprefix([d, fname]) != d:
+                # Only allow template names to reference a subpath
+                # of the list of directories.
+                continue
+            for fn in [fname, fname + self.extension]:
+                if os.path.exists(fn):
+                    return fn
+        raise LookupError("Failed to find template: %s" % name)
+
+    def process_dir(d):
+        return os.path.normpath(os.path.abspath(d))
+
+
+class TemplateDictLookup(TemplateLookup):
+    """\
+    An implementation of TemplateLookup that retrieves template data
+    from a provided dict of templates. This class should not be used
+    in production because it does not cache templates and must reparse
+    each template everytime it is loaded.
+    """
+    def __init__(self, partials, tmpl_opts=None):
+        self.partials = partials
+
+        tmpl_opts = tmpl_opts or {}
+        tmpl_opts.setdefault("lookup", self)
+        self.tmpl_opts = TemplateOptions(tmpl_opts)
+
+    def get_template(self, name):
+        if name not in self.partials:
+            raise LookupError("Failed to find template: %s" % name)
+        return Template(data=self.partials[name], opts=self.tmpl_opts)
+
+
 class ContextProxy(object):
+    """\
+    This object manages the access to a context variable that is used
+    to answer queries for tag names in a template. When a template is
+    rendered this class answers requests for attributes or items
+    contained in the user supplied data.
+    """
     def __init__(self, template, ctx, parent, should_raise):
         self.template = template
         self.ctx = ctx
@@ -83,7 +403,7 @@ class ContextProxy(object):
             self.should_raise = ctx.RAISE_ON_MISS or should_raise
         else:
             self.should_raise = should_raise
-    
+
     def render(self, writer, escaped=True):
         if self._should_call(args=0):
             data = self.cached = self.template.decode(self.ctx())
@@ -94,7 +414,7 @@ class ContextProxy(object):
         if escaped:
             data = cgi.escape(data, quote=True)
         writer.write(data)
-    
+
     def get(self, name):
         parts = name.split(".")
         ret = self
@@ -160,15 +480,6 @@ class ContextProxy(object):
             return func.func_code.co_argcount - 1 == args
         else:
             return callable(func)
-
-
-class Tag(object):
-    def __init__(self, tagtype, name, start, end, indent):
-        self.tagtype = tagtype
-        self.name = name
-        self.start = start
-        self.end = end
-        self.indent = indent
 
 
 class Tokenizer(object):
@@ -278,7 +589,7 @@ class Tokenizer(object):
             # data stream.
             start = otag_match.start() + len(ws_padding)
             end = ctag_match.end()
-            tag = Tag(tagtype, content, start, end, ws_padding)
+            tag = Tag(tagtype, content, start, end)
             ret.append((self.TAG, tag))
         
         return ret
@@ -338,120 +649,28 @@ class Tokenizer(object):
         raise ParseError(mesg, (len(lines), len(lines[-1])))
 
 
-class Renderable(object):
-    def __init__(self, template):
-        self.template = template
-
-    def render(self, ctx, writer):
-        raise NotImplementedError()
-
-
-class Static(Renderable):
-    def __init__(self, template, data):
-        super(Static, self).__init__(template)
-        self.data = data
-
-    def render(self, ctx, writer):
-        writer.write(self.data)
-
-
-class Partial(Renderable):
-    def __init__(self, template, name, indent=None):
-        super(Partial, self).__init__(template)
-        self.name = name
-        self.indent = indent or ""
-    
-    def render(self, ctx, writer):
-        tmpl = self.template.get_partial(self.name, indent=self.indent)
-        return tmpl.render(ctx, writer)
-
-
-class Value(Renderable):
-    def __init__(self, template, name, escaped=True):
-        super(Value, self).__init__(template)
-        self.name = name
-        self.escaped = escaped
-    
-    def render(self, ctx, writer):
-        ctx = ctx.get(self.name)
-        ctx.render(writer, escaped=self.escaped)
-
-
-class Multi(Renderable):
-    def __init__(self, template, parent):
-        super(Multi, self).__init__(template)
-        self.parent = parent
-        self.sects = []
-
-    def add(self, obj):
-        self.sects.append(obj)
-        return obj
-    
-    def render(self, ctx, writer):
-        map(lambda s: s.render(ctx, writer), self.sects)
-
-
-class Section(Multi):
-    def __init__(self, template, parent, name, start):
-        super(Section, self).__init__(template, parent)
-        self.name = name
-        self.start = start
-        self.end = None
-    
-    def render(self, ctx, writer):
-        ctx = ctx.get(self.name)
-        if ctx.falsy():
-            return
-        elif ctx.islambda():
-            content = self.template.subdata(self.start, self.end)
-            ctx.execute(content, ctx, writer)
-        else:
-            for item in ctx.iterate():
-                super(Section, self).render(item, writer)
-
-
-class InvSection(Multi):
-    def __init__(self, template, parent, name, start):
-        super(InvSection, self).__init__(template, parent)
-        self.name = name
-        self.start = start
-        self.end = None
-    
-    def render(self, ctx, writer):
-        ctx = ctx.get(self.name)
-        if ctx.falsy():
-            super(InvSection, self).render(ctx, writer)
-
-
-class Writer(object):
-    def __init__(self):
-        self.buf = []
-    
-    def write(self, data):
-        assert isinstance(data, unicode)
-        self.buf.append(data)
-    
-    def getvalue(self):
-        ret = u"".join(self.buf)
-        assert isinstance(ret, unicode)
-        return ret
-
-
-class TemplateOptions(object):
-    def __init__(self, opts):
-        self.extension = opts.get("extension", None)
-        self.lookup = opts.get("lookup", None)
-        self.charset = opts.get("charset", "utf-8")
-        self.encoding_errors = opts.get("encoding-errors", "replace")
-
-    def get(self, name, default):
-        return getattr(self, name, default)
-
 class Template(object):
-    def __init__(self, data=None, filename=None, partials=None, opts=None):
+    """\
+    A Template object is responsible for parsing the tokenized source
+    as well as dispatching render requests to the root renderable
+    instance.
+    
+    data        - Raw template data as a string. If this is not a unicode
+                  string an attempt to decode it is made using the encoding
+                  options passed in the `opts` paramter.
+    filename    - Instead of passing the raw data in the `data` kwarg you
+                  can specify a filename for the template. If both `data`
+                  and `filename` are passed, the `filename` will be used
+                  to find partials and to specify a template filename
+                  extension. Files will be decoded according to the
+                  encoding options passed in the `opts` paramter.
+    opts        - Various configuration settings that control template
+                  rendering. See the `TemplateOptions` class for a description
+                  of the accepted options.
+    """
+    def __init__(self, data=None, filename=None, opts=None):
         self.data = data
         self.filename = filename
-        self.partials = partials or {}
 
         if isinstance(opts, TemplateOptions):
             self.opts = opts
@@ -473,13 +692,6 @@ class Template(object):
 
         self.root = self.parse(self.data)
 
-    def sub_template(self, data=None, filename=None, **kwargs):
-        kwargs.setdefault("data", data)
-        kwargs.setdefault("filename", filename)
-        kwargs.setdefault("partials", self.partials)
-        kwargs.setdefault("opts", self.opts)
-        return Template(**kwargs)
-
     def render(self, context, writer=None):
         if not isinstance(context, ContextProxy):
             context = ContextProxy(self, context, None, False)
@@ -490,27 +702,17 @@ class Template(object):
             self.root.render(context, writer)
             return writer.getvalue()
 
-    def get_partial(self, name, indent=None):
-        if name in self.partials:
-            tmpl = self.redent(self.partials[name], indent=indent)
-            return Template(tmpl, partials=self.partials, opts=self.opts)
-        elif self.opts.lookup:
-            # I have to fix the indentiation issue for partials because
-            # the Ruby version dictates this as part of the spec.
-            raise NotImplementedError()
-            # template = self.lookup.get_template(name, indent=indent)
-            # if not isinstance(template, Template):
-            #     raise TypeError(u"Partials must be a template.")
-            # return template
+    def get_partial(self, name):
+        if self.opts.lookup:
+            tmpl = self.opts.lookup.get_template(name)
+            assert isinstance(tmpl, Template), "Invalid template instance."
+            return tmpl
         elif self.filename is not None:
-            # I have to fix the indentiation issue for partials because
-            # the Ruby version dictates this as part of the spec.
-            raise NotImplementedError()
-            # dirname = os.path.dirname(self.filename)
-            # fname = os.path.join(dirname, name + self.extension)
-            # if not os.path.exists(fname):
-            #     raise PartialNotFound(name)
-            # return Template(filename=fname, lookup=self.lookup, opts=self.opts)
+            dirname = os.path.dirname(self.filename)
+            fname = os.path.join(dirname, name + self.extension)
+            if not os.path.exists(fname):
+                raise PartialNotFound(name)
+            return self.sub_template(filename=filename)
         raise UnableToLoadPartials()
 
     def parse(self, data):
@@ -542,7 +744,7 @@ class Template(object):
                 curr.end = tok[1].start
                 curr = curr.parent
             elif tok[1].tagtype in (u"<", u">"):
-                curr.add(Partial(self, tok[1].name, indent=tok[1].indent))
+                curr.add(Partial(self, tok[1].name))
             elif tok[1].tagtype in (u"{", u"&"):
                 curr.add(Value(self, tok[1].name, escaped=False))
             else:
@@ -551,14 +753,14 @@ class Template(object):
             tokenizer.error("Unclosed section: %s" % curr.name)
         return root
     
-    def subdata(self, start, end):
-        return self.data[start:end]
+    def sub_template(self, data=None, filename=None, **kwargs):
+        kwargs.setdefault("data", data)
+        kwargs.setdefault("filename", filename)
+        kwargs.setdefault("opts", self.opts)
+        return Template(**kwargs)
     
-    def redent(self, data, indent):
-        lines = [u"%s%s" % (indent, l) for l in data.splitlines()]
-        if data[-1] == "\n":
-            lines.append(u"")
-        return self.decode(os.linesep).join(lines)
+    def sub_data(self, start, end):
+        return self.data[start:end]
     
     def decode(self, val):
         if isinstance(val, unicode):
@@ -571,86 +773,7 @@ class Template(object):
             return unicode(val)
 
 
-class TemplateInfo(object):
-    def __init__(self, fname, template_opts):
-        self.fname = fname
-        self.mtime = os.stat(fname).st_mtime
-        self.template_opts = template_opts
-        self.template = Template(filename=self.fname, **self.template_opts)
-        self.lock = threading.Lock()
-
-    def recheck_fs(self):
-        mtime = os.stat(self.fname).st_mtime
-        with self.lock:
-            if mtime == self.mtime:
-                return
-            self.mtime = mtime
-            self.template = Template(filename=self.fname, **self.template_opts)
-
-
-class TemplateLookup(object):
-    def __init__(self, directories, extension=None,
-                            filesystem_checks=False, template_opts=None):
-
-        self.templates = {}
-
-        if isinstance(directories, basestring):
-            directories = [directories]
-        self.directories = [self.process_dir(d) for d in directories]
-
-        self.extension = extension or ".mustache"
-        if not self.extension.startswith("."):
-            self.extension = "." + self.extension
-
-        self.filesystem_checks = filesystem_checks
-        self.template_opts = template_opts or {}
-
-        if "extension" not in self.template_opts:
-            self.template_opts["extension"] = self.extension
-
-        if "lookup" not in self.template_opts:
-            self.template_opts["lookup"] = self
-
-        self.lock = threading.Lock()
-
-    def get_template(self, name):
-        tmplinfo = self.templates.get(name, None)
-        if not tmplinfo:
-            tmplinfo = self.load_template(name)
-        if self.filesystem_checks:
-            tmplinfo.recheck_fs()
-        return tmplinfo.template
-
-    def load_template(self, name):
-        with self.lock:
-            try:
-                return self.templates[name]
-            except KeyError:
-                pass
-            ret = TemplateInfo(self.find_template(name), self.template_opts)
-            self.templates[name] = ret
-            return ret
-
-    def find_template(self, name):
-        for d in self.directories:
-            path = self.process_dir(os.path.join(d, name))
-            if os.path.commonprefix([d, path]) != d:
-                # Only allow template names to reference a subpath
-                # of the list of directories.
-                continue
-            path = os.path.normpath(os.path.join(d, name))
-            fname = os.path.join(d, name)
-            for fn in [fname, fname + self.extension]:
-                if os.path.exists(fn):
-                    return fn
-        raise LookupError("Failed to find template: %s" % name)
-
-    def process_dir(d):
-        return os.path.normpath(os.path.abspath(d))
-
-
 def render(template, context, **kwargs):
     t = Template(data=template, **kwargs)
     return t.render(context)
 
-    

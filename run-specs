@@ -116,8 +116,11 @@ class SpecRunner(object):
 
     def run_test(self, test):
         try:
+            opts = {}
             partials = test.get("partials")
-            t = pystache.Template(test["template"], partials=partials)
+            if partials is not None:
+                opts["lookup"] = pystache.TemplateDictLookup(partials)
+            t = pystache.Template(test["template"], opts=opts)
             output = t.render(test["data"])
             if output == test["expected"]:
                 print "ok - %s" % test["name"]
