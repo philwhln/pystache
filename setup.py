@@ -12,7 +12,7 @@ setup(
     author='Paul J. Davis',
     author_email='paul.joseph.davis@gmail.com',
     url='http://github.com/davisp/pystache',
-    packages=['pystache'],
+    py_modules=['pystache'],
     license='MIT',
     classifiers = [
         "Development Status :: 4 - Beta",
