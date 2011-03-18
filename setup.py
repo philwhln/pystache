@@ -7,7 +7,7 @@ HISTORY = open("HISTORY.rst").read()
 
 setup(
     name='pystache',
-    version='0.3.1',
+    version='0.4.0',
     description='Mustache for Python',
     long_description=README + "\n\n" + HISTORY,
     author='Chris Wanstrath',
