@@ -3,13 +3,12 @@
 from distutils.core import setup
 
 README = open("README.rst").read()
-HISTORY = open("HISTORY.rst").read()
 
 setup(
     name='pystache',
     version='0.4.0',
     description='Mustache for Python',
-    long_description=README + "\n\n" + HISTORY,
+    long_description=README,
     author='Chris Wanstrath',
     author_email='chris@ozmm.org',
     url='http://github.com/defunkt/pystache',
